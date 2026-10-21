@@ -1,0 +1,113 @@
+{
+  "id": "pi_cec_lg_volume_bridge",
+  "alias": "Apple TV CEC \u2192 LG volume",
+  "description": "Receive local Pi CEC volume/mute events. Preserve queued taps, expire held repeats after 300 ms, and accelerate holds using the Pi configuration. Timing metadata links Pi logs to HA traces.",
+  "triggers": [
+    {
+      "trigger": "webhook",
+      "webhook_id": "[REDACTED]",
+      "allowed_methods": [
+        "POST"
+      ],
+      "local_only": true
+    }
+  ],
+  "conditions": [
+    {
+      "condition": "template",
+      "value_template": "{{ trigger.json is defined and trigger.json.get('sender') == 'pi-cec' and trigger.json.get('button') in ['volume_up', 'volume_down', 'mute'] }}"
+    },
+    {
+      "condition": "state",
+      "entity_id": "media_player.lg_webos_tv_oled65e6p",
+      "state": "on"
+    }
+  ],
+  "actions": [
+    {
+      "event": "pi_cec_button",
+      "event_data": {
+        "button": "{{ trigger.json.button }}",
+        "source": "{{ trigger.json.source }}",
+        "sequence": "{{ trigger.json.sequence }}",
+        "steps": "{{ trigger.json.get('steps', 1) | int(1) }}",
+        "repeat": "{{ trigger.json.get('repeat', false) }}",
+        "pi_age_ms": "{{ trigger.json.get('age_ms', 0) }}",
+        "ha_queue_ms": "{{ ((as_timestamp(now()) - (cec_received_at | float)) * 1000) | round(1) }}"
+      }
+    },
+    {
+      "choose": [
+        {
+          "conditions": "{{ trigger.json.button == 'volume_up' }}",
+          "sequence": [
+            {
+              "repeat": {
+                "count": "{{ [1, [trigger.json.get('steps', 1) | int(1), 3] | min] | max }}",
+                "sequence": [
+                  {
+                    "alias": "Skip stale held repeats; preserve queued taps",
+                    "condition": "template",
+                    "value_template": "{{ not trigger.json.get('repeat', false) or ((as_timestamp(now()) - (cec_received_at | float)) + (trigger.json.get('age_ms', 0) | float(0)) / 1000) < 0.3 }}"
+                  },
+                  {
+                    "action": "media_player.volume_up",
+                    "target": {
+                      "entity_id": "media_player.lg_webos_tv_oled65e6p"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "conditions": "{{ trigger.json.button == 'volume_down' }}",
+          "sequence": [
+            {
+              "repeat": {
+                "count": "{{ [1, [trigger.json.get('steps', 1) | int(1), 3] | min] | max }}",
+                "sequence": [
+                  {
+                    "alias": "Skip stale held repeats; preserve queued taps",
+                    "condition": "template",
+                    "value_template": "{{ not trigger.json.get('repeat', false) or ((as_timestamp(now()) - (cec_received_at | float)) + (trigger.json.get('age_ms', 0) | float(0)) / 1000) < 0.3 }}"
+                  },
+                  {
+                    "action": "media_player.volume_down",
+                    "target": {
+                      "entity_id": "media_player.lg_webos_tv_oled65e6p"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "conditions": "{{ trigger.json.button == 'mute' }}",
+          "sequence": [
+            {
+              "action": "media_player.volume_mute",
+              "target": {
+                "entity_id": "media_player.lg_webos_tv_oled65e6p"
+              },
+              "data": {
+                "is_volume_muted": "{{ not state_attr('media_player.lg_webos_tv_oled65e6p', 'is_volume_muted') }}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "mode": "queued",
+  "max": 3,
+  "max_exceeded": "silent",
+  "trace": {
+    "stored_traces": 200
+  },
+  "variables": {
+    "cec_received_at": "{{ as_timestamp(now()) }}"
+  }
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=Apple TV CEC volume to Home Assistant
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pi
+SupplementaryGroups=video
+ExecStart=/usr/bin/python3 -u /home/pi/cec-ha-bridge/cec_ha_bridge.py --config /home/pi/cec-ha-bridge/config.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

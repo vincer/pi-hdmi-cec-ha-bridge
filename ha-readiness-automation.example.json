@@ -1,0 +1,38 @@
+{
+  "id": "pi_cec_webos_readiness",
+  "alias": "CEC active source \u2192 LG webOS reconnect",
+  "description": "Pi probes webOS readiness after any external CEC Active Source broadcast; request one native HA refresh if the LG is not already on.",
+  "triggers": [
+    {
+      "trigger": "webhook",
+      "webhook_id": "[REDACTED]",
+      "allowed_methods": [
+        "POST"
+      ],
+      "local_only": true
+    }
+  ],
+  "conditions": [
+    {
+      "condition": "template",
+      "value_template": "{{ trigger.json is defined and trigger.json.get('sender') == 'pi-cec' and trigger.json.get('event') == 'webos_ready' }}"
+    },
+    {
+      "condition": "template",
+      "value_template": "{{ not is_state('media_player.lg_webos_tv_oled65e6p', 'on') }}"
+    }
+  ],
+  "actions": [
+    {
+      "action": "homeassistant.update_entity",
+      "target": {
+        "entity_id": "media_player.lg_webos_tv_oled65e6p"
+      }
+    }
+  ],
+  "mode": "single",
+  "max_exceeded": "silent",
+  "trace": {
+    "stored_traces": 30
+  }
+}
