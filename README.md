@@ -48,7 +48,9 @@ The readiness automation addresses that startup gap. After any external CEC Acti
 
 **Enable Quick Start+ on the LG TV for faster volume control after waking it.** On this OLED65E6P, our wake tests took roughly **16–17 seconds** from the CEC Active Source announcement until the webOS port became reachable with Quick Start+ off, versus roughly **3 seconds** with it on. These are measurements from this setup, not guaranteed timings for other TVs.
 
-The bridge relies on the TV's network control service, so seeing a picture does not necessarily mean volume control is ready. Quick Start+ reduces the TV-side startup delay; the readiness automation above reduces the additional wait for HA to reconnect. It cannot make webOS available before the TV starts it, and very early button presses can still be dropped. Quick Start+ can increase standby power consumption; measure your own TV if that tradeoff matters.
+The bridge relies on the TV's network control service, so seeing a picture does not necessarily mean volume control is ready. Quick Start+ reduces the TV-side startup delay; the readiness automation above reduces the additional wait for HA to reconnect. It cannot make webOS available before the TV starts it, and very early button presses can still be dropped.
+
+With Quick Start+ enabled, **we measured about 0.3 W total standby power** on this TV using Ethernet, with Wi-Fi disabled, Wake-on-LAN enabled (the TV's mobile wake setting), and internet access blocked at the router. This is the measured total idle draw, not a measurement of the additional power attributable to Quick Start+ alone. Standby consumption can vary with the TV and settings; measure your own setup if that tradeoff matters.
 
 ## Validation and operation
 
