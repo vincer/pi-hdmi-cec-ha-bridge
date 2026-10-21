@@ -54,9 +54,13 @@ With Quick Start+ enabled, **we measured about 0.3 W total standby power** on th
 
 ## Validation and operation
 
-Run `python3 -m unittest test_cec_delivery test_cec_hold_acceleration test_cec_readiness`. Tests mock firmware access; one test uses a local TCP listener.
+Run `python3 -m unittest discover -p 'test_cec_*.py'`. Tests mock firmware access; socket tests use local TCP and Unix listeners.
 
-View logs with `journalctl -u pi-cec-ha.service`. The service starts at boot and restarts after process failures. It currently has no worker-health supervision or service watchdog; a process that remains alive but stuck may need intervention.
+View logs with `journalctl -u pi-cec-ha.service`. The service starts at boot and restarts after process failures, with a 10-second restart delay. A health supervisor checks that the CEC loop, volume worker and optional readiness worker are alive and making progress. A dead worker or loop stalled for more than 15 seconds causes the process to exit so systemd can restart it. Idle loops still report progress; a sleeping TV or a promptly failed HA request does not cause a restart. The readiness worker reports progress between probes, so its normal 30-second search is allowed to complete.
+
+The supplied service also enables systemd's independent 30-second watchdog. The supervisor feeds it only while the monitored loops are healthy; if the supervisor or Python process stops running, systemd terminates and restarts the bridge. Core dumps are disabled to protect the small SD card. Long DNS stalls are treated as a lack of progress even though they are not covered by the HTTP socket timeout. Recovery drops in-memory queued input and never retries ambiguous volume POSTs. These checks cannot detect every functional failure: an Apple TV CEC wedge or a firmware call that returns successfully without the intended effect may still require investigation.
+
+On the personal Pi deployment, logging also has explicit limits: an 8 MiB target for the volatile RAM journal, 1 MiB maximum journal files, and five-minute logrotate checks. Persistent syslog rotates daily or above 1 MiB and keeps seven compressed archives; other rsyslog files rotate weekly or above 512 KiB and keep four compressed archives each. Login records rotate monthly or above 1 MiB and keep two compressed archives. These are system-wide deployment settings, not configured by the Python bridge or its service file; see the [optional logging configuration examples](ops/README.md). Rotation thresholds can be exceeded between checks, and active journal files can temporarily exceed the journal target. Journald rate limiting reduces fault-generated floods but can discard messages during a flood.
 
 The fake receiver occupies logical address 5 and refuses ARC. Do not run it alongside a real CEC audio receiver. Only discovered Apple vendor devices are accepted as volume senders; any external Active Source can trigger readiness checks.
 

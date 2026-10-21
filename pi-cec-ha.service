@@ -11,6 +11,12 @@ SupplementaryGroups=video
 ExecStart=/usr/bin/python3 -u /home/pi/cec-ha-bridge/cec_ha_bridge.py --config /home/pi/cec-ha-bridge/config.json
 Restart=on-failure
 RestartSec=10
+# Progress-checked notifications come from the main process's health thread.
+# If Python itself stops scheduling, systemd independently terminates it.
+WatchdogSec=30
+NotifyAccess=main
+# A watchdog abort must not fill the small SD card with a core dump.
+LimitCORE=0
 TimeoutStopSec=5
 NoNewPrivileges=true
 PrivateTmp=true

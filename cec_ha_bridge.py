@@ -13,6 +13,7 @@ import ctypes as C
 import http.client
 import json
 import logging
+import os
 import queue
 import signal
 import socket
@@ -25,6 +26,58 @@ import uuid
 LOG = logging.getLogger("cec-ha")
 APPLE_VENDOR = bytes.fromhex("0010fa")
 KEYS = {0x41: "volume_up", 0x42: "volume_down", 0x43: "mute"}
+
+
+class HealthSupervisor:
+    """Only feed systemd's watchdog while every required loop makes progress."""
+
+    def __init__(self, stop, timeout=15):
+        self.stop, self.timeout = stop, timeout
+        self.lock = threading.Lock()
+        self.workers = {}
+
+    def register(self, name, thread):
+        with self.lock:
+            self.workers[name] = [thread, time.monotonic()]
+
+    def beat(self, name):
+        with self.lock:
+            self.workers[name][1] = time.monotonic()
+
+    def failure(self):
+        now = time.monotonic()
+        with self.lock:
+            for name, (thread, last_progress) in self.workers.items():
+                if not thread.is_alive():
+                    return name + " worker exited"
+                if now - last_progress > self.timeout:
+                    return "%s worker made no progress for %s seconds" % (name, self.timeout)
+        return None
+
+    @staticmethod
+    def notify():
+        address = os.environ.get("NOTIFY_SOCKET")
+        if not address:
+            return
+        if address.startswith("@"):
+            address = "\0" + address[1:]
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as channel:
+            channel.settimeout(0.5)
+            channel.connect(address)
+            channel.sendall(b"WATCHDOG=1")
+
+    def run(self):
+        while not self.stop.is_set():
+            failure = self.failure()
+            if failure:
+                LOG.critical("Bridge unhealthy: %s; exiting for systemd recovery", failure)
+                # A blocked CEC call or resolver cannot be cancelled safely in
+                # Python. Exit the whole process instead of starting a second
+                # delivery worker that could duplicate an in-flight command.
+                # systemd restarts it after 10 s; no queued input is persisted.
+                os._exit(1)
+            self.notify()
+            self.stop.wait(1)
 
 
 class WebhookClient:
@@ -76,8 +129,9 @@ class WebhookClient:
 class ReadinessMonitor:
     """Coalesce CEC hints and probe webOS independently of volume delivery."""
 
-    def __init__(self, config, stop):
+    def __init__(self, config, stop, progress=None):
         self.config, self.stop = config, stop
+        self.progress = progress or (lambda: None)
         self.requests = queue.Queue(maxsize=1)
         self.lock = threading.Lock()
         self.pending = False
@@ -101,6 +155,9 @@ class ReadinessMonitor:
         host = self.config["tv_host"]
         port = self.config.get("tv_port", 3000)
         while not self.stop.is_set():
+            # A normal 30 s readiness search is healthy if each probe returns.
+            # A resolver/connect/POST stuck for 15 s is not.
+            self.progress()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 LOG.info("WebOS readiness check timed out source=%x", source)
@@ -125,6 +182,7 @@ class ReadinessMonitor:
         client = WebhookClient(self.config["ready_webhook_url"])
         try:
             while not self.stop.is_set():
+                self.progress()
                 try:
                     source, received = self.requests.get(timeout=0.2)
                 except queue.Empty:
@@ -153,7 +211,9 @@ class Bridge:
         self.events = queue.Queue(maxsize=256)
         self.buttons = queue.Queue(maxsize=4)
         self.stop = threading.Event()
-        self.readiness = (ReadinessMonitor(config, self.stop)
+        self.health = HealthSupervisor(self.stop)
+        self.readiness = (ReadinessMonitor(config, self.stop,
+                                          lambda: self.health.beat("readiness"))
                           if config.get("ready_webhook_url") and config.get("tv_host")
                           else None)
         self.apples = set()
@@ -333,6 +393,7 @@ class Bridge:
         client = WebhookClient(self.config["webhook_url"])
         try:
             while not self.stop.is_set():
+                self.health.beat("volume")
                 try:
                     item = self.buttons.get(timeout=0.2)
                 except queue.Empty:
@@ -342,6 +403,11 @@ class Bridge:
             client.close()
 
     def run(self):
+        # Reject missing/invalid URLs before launching daemon workers. Otherwise
+        # a startup exception could leave only the CEC loop running.
+        WebhookClient(self.config["webhook_url"])
+        if self.readiness is not None:
+            WebhookClient(self.config["ready_webhook_url"])
         self.lib.bcm_host_init()
         self.lib.vc_cec_register_callback(self.callback, None)
         # Manage identity/replies ourselves instead of firmware's automatic CEC
@@ -365,14 +431,23 @@ class Bridge:
                 raise RuntimeError("Cannot register CEC callbacks")
             self.advertise()
             self.discover()
-            worker = threading.Thread(target=self.deliver, daemon=True)
+            # Heartbeats measure loop progress, not CEC traffic or HA success:
+            # sleeping devices and promptly rejected requests are healthy.
+            self.health.register("cec", threading.current_thread())
+            worker = threading.Thread(target=self.deliver, name="volume", daemon=True)
+            self.health.register("volume", worker)
             worker.start()
             if self.readiness is not None:
                 # Probing a TV during startup must not block volume delivery.
-                threading.Thread(target=self.readiness.run, daemon=True).start()
+                ready_worker = threading.Thread(target=self.readiness.run,
+                                                name="readiness", daemon=True)
+                self.health.register("readiness", ready_worker)
+                ready_worker.start()
+            threading.Thread(target=self.health.run, name="health", daemon=True).start()
             LOG.info("Ready; physical=%04x, TV audio mode stays off", self.physical)
             refresh = time.monotonic() + 60
             while not self.stop.is_set():
+                self.health.beat("cec")
                 try:
                     self.handle(*self.events.get(timeout=0.2))
                 except queue.Empty:
