@@ -5,6 +5,8 @@
 
 Use Apple TV HDMI-CEC volume buttons to control an LG webOS TV through Home Assistant. A Raspberry Pi advertises a CEC audio receiver while keeping the TV's built-in speakers active.
 
+This started because my LG OLED65E6P would not accept HDMI-CEC volume commands for its built-in speakers. The physical Apple TV remote had to use infrared, requiring line of sight to the TV, and volume control from the Apple TV remote on my iPhone did not work. This bridge lets Apple TV send volume commands over HDMI-CEC, then uses Home Assistant's LG webOS integration to change the TV's volume over the network.
+
 The bridge forwards volume up/down and mute through a local HA webhook. Taps change one step; held buttons accelerate after a configurable delay. Expired repeats are discarded to prevent delayed volume jumps.
 
 Any external Active Source broadcast also starts a bounded background check for the TV's webOS port. A separate webhook asks HA to refresh its LG connection once the port is reachable. Repeated hints coalesce, and HA skips refresh when the TV is already on.
