@@ -1,5 +1,8 @@
 # Raspberry Pi HDMI-CEC → Home Assistant volume bridge
 
+> [!WARNING]
+> **This project is currently for personal use only**, built around my own hardware and Home Assistant setup. If you come across it and would like to try it, **do so at your own risk**. You're welcome to [open an issue](https://github.com/vincer/pi-hdmi-cec-ha-bridge/issues) to ask questions or discuss options for making it more shareable and easier to use with other setups.
+
 Use Apple TV HDMI-CEC volume buttons to control an LG webOS TV through Home Assistant. A Raspberry Pi advertises a CEC audio receiver while keeping the TV's built-in speakers active.
 
 The bridge forwards volume up/down and mute through a local HA webhook. Taps change one step; held buttons accelerate after a configurable delay. Expired repeats are discarded to prevent delayed volume jumps.
