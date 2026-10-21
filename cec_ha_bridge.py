@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Receive Apple TV CEC buttons without enabling the television's audio mode."""
+"""Bridge Apple TV CEC volume buttons to Home Assistant's LG webOS control.
+
+On the tested LG E6, listening passively was insufficient: Apple TV only sent
+HDMI volume commands once an audio receiver reported System Audio Mode active.
+We impersonate that receiver for Apple TV, but report audio mode off to the TV
+so its built-in speakers remain usable. HA performs the actual volume changes.
+This deliberately uses the original Pi's legacy VideoCore API; newer Linux CEC
+backends need a port, not just a different shared-library path.
+"""
 import argparse
 import ctypes as C
 import http.client
@@ -38,6 +46,8 @@ class WebhookClient:
     def post(self, body):
         # Retire idle connections before a new burst instead of relying on a
         # server's idle timeout. A failed POST is never replayed automatically.
+        # HA may have applied a volume step even if its response was lost;
+        # retrying that POST could apply the step (or toggle mute) twice.
         if time.monotonic() - self.last_used > 10:
             self.close()
         reused = self.connection is not None
@@ -83,6 +93,10 @@ class ReadinessMonitor:
         LOG.info("WebOS readiness check requested source=%x", source)
 
     def check(self, client, source, received):
+        # A visible picture/CEC wake does not mean webOS is accepting connections.
+        # Poll its port for a bounded period, then ask HA to refresh the native
+        # integration rather than waiting for HA's normal reconnect interval.
+        # TCP reachability is only a hint: HA still owns pairing and connection.
         deadline = received + self.config.get("readiness_timeout", 30)
         host = self.config["tv_host"]
         port = self.config.get("tv_port", 3000)
@@ -123,6 +137,8 @@ class ReadinessMonitor:
                     client.close()
                     with self.lock:
                         self.pending = False
+                        # Devices can announce Active Source repeatedly. One
+                        # probe at a time plus a cooldown avoids refresh storms.
                         self.next_allowed = time.monotonic() + 5
         finally:
             client.close()
@@ -131,6 +147,9 @@ class ReadinessMonitor:
 class Bridge:
     def __init__(self, config):
         self.config = config
+        # Keep firmware callbacks and network I/O separate. A small button queue
+        # bounds backlog during a slow HA/TV response; age checks below prevent
+        # held buttons from continuing to change volume after release.
         self.events = queue.Queue(maxsize=256)
         self.buttons = queue.Queue(maxsize=4)
         self.stop = threading.Event()
@@ -148,6 +167,8 @@ class Bridge:
         self.last_seen = 0
         self.lib = C.CDLL("/opt/vc/lib/libbcm_host.so")
         cb_type = C.CFUNCTYPE(None, C.c_void_p, *([C.c_uint32] * 5))
+        # Retain this ctypes callback for the entire firmware registration;
+        # letting Python collect it would leave firmware with a dangling pointer.
         self.callback = cb_type(self.receive)
         self.lib.vc_cec_register_callback.argtypes = [cb_type, C.c_void_p]
         self.lib.vc_cec_set_logical_address.argtypes = [C.c_int, C.c_int, C.c_uint32]
@@ -155,6 +176,9 @@ class Bridge:
         self.lib.vc_cec_get_physical_address.argtypes = [C.POINTER(C.c_uint16)]
 
     def receive(self, context, header, p0, p1, p2, p3):
+        # VideoCore packs reason/length into the header and frame bytes into
+        # four little-endian words. Timestamp here so later queue delays count
+        # toward expiry rather than making old input look freshly received.
         size = min((header >> 16) & 255, 16)
         event = (header & 65535, header >> 24,
                  struct.pack("<IIII", p0, p1, p2, p3)[:size], time.monotonic())
@@ -169,6 +193,8 @@ class Bridge:
             LOG.warning("CEC transmit rejected rc=%d opcode=%02x", rc, payload[0])
 
     def advertise(self):
+        # Report Physical Address / Device Vendor ID, never Active Source.
+        # Advertising the bridge must not steal the TV's selected input.
         self.send(15, b"\x84" + self.physical.to_bytes(2, "big") + b"\x05", False)
         self.send(15, bytes.fromhex("87 18 c0 86"), False)
 
@@ -182,22 +208,30 @@ class Bridge:
             return
         handled = time.monotonic()
         now = handled if received is None else received
+        # Use CEC event timestamps, not worker timing, to distinguish a hold.
+        # The gap limit also recovers if a release callback is missed.
         same_hold = (self.last_key == key and self.hold_source == source
                      and now - self.last_seen <= 0.6)
         if not same_hold:
             self.hold_source, self.hold_start = source, now
         self.last_seen = now
         if self.last_key == key:
+            # Mute is a toggle: repeated presses from a hold must not oscillate.
             if key == 0x43 and now - self.last_press < 1.5:
                 return
             if now - self.last_press < self.config.get("repeat_interval", 0.15):
                 return
         steps = 1
         if key in (0x41, 0x42) and same_hold:
+            # Accelerate via counted HA steps, preserving precise single taps.
+            # The example config uses 1.25 s after testing; 0.75 s remains the
+            # original fallback for configurations that omit this setting.
             if now - self.hold_start >= self.config.get("hold_acceleration_after", 0.75):
                 steps = max(1, min(3, int(self.config.get("hold_acceleration_steps", 2))))
         self.last_key, self.last_press = key, now
         self.sequence += 1
+        # Session UUID + counter lets HA traces correlate with Pi logs across
+        # restarts. This is diagnostic metadata, not a retry/deduplication layer.
         item = (now, handled, {"sender": "pi-cec", "button": KEYS[key],
                       "source": source, "frame": "%x5:44:%02x" % (source, key),
                       "sequence": "%s:%d" % (self.session, self.sequence),
@@ -211,6 +245,9 @@ class Bridge:
             LOG.warning("Button queue full; dropping stale input")
 
     def handle(self, reason, rc, raw, received=None):
+        # Legacy callback reasons: 2 = received message, 4 = button pressed,
+        # 8 = button released, 32768 = logical-address loss. Specialized button
+        # callbacks and ordinary frames both go through the same repeat limiter.
         if reason == 32768:
             raise RuntimeError("CEC logical address lost")
         if len(raw) < 2:
@@ -227,6 +264,9 @@ class Bridge:
             return
         if (self.readiness is not None and destination == 15 and source not in (5, 15)
                 and opcode == 0x82 and len(raw) == 4 and raw[2:] != b"\xff\xff"):
+            # Any external source (including PS5) may wake/select the TV. This
+            # only starts a readiness probe; it never selects an input or powers
+            # a device, and does not buffer/replay early volume commands.
             self.readiness.request(source, time.monotonic() if received is None else received)
         if opcode == 0x87 and len(raw) >= 5:
             if raw[2:5] == APPLE_VENDOR:
@@ -234,20 +274,28 @@ class Bridge:
                 self.apples.add(source)
                 if new:
                     LOG.info("Discovered Apple TV at logical address %x", source)
+                # Report System Audio Mode ON directly to Apple TV only. This
+                # was necessary in testing to make it send volume buttons.
                 self.send(source, bytes.fromhex("7e 01"))
             else:
                 self.apples.discard(source)
         if destination != 5:
             return
         identity = {
+            # Physical address (audio device type 5), vendor, OSD name,
+            # CEC version 1.4 and power status ON identify the virtual receiver.
             0x83: (15, b"\x84" + self.physical.to_bytes(2, "big") + b"\x05"),
             0x8C: (15, bytes.fromhex("87 18 c0 86")),
             0x46: (source, b"\x47Pi Volume"),
             0x9F: (source, bytes.fromhex("9e 05")),
             0x8F: (source, bytes.fromhex("90 00")),
+            # Only discovered Apple devices see System Audio Mode as active.
             0x7D: (source, bytes([0x7E, int(source in self.apples)])),
+            # Audio Status volume 0x7f means unknown. We do not mirror LG volume
+            # here, so Apple TV's overlay cannot display the actual LG level.
             0x71: (source, bytes.fromhex("7a 7f")),
-            # Never activate the TV's external speakers or ARC.
+            # Decline System Audio Mode requests and ARC initiation. Broadcasting
+            # audio-mode ON would risk routing LG sound away from its speakers.
             0x70: (source, bytes.fromhex("72 00")),
             0xC3: (source, bytes.fromhex("00 c3 04")),
             0xC0: (source, bytes.fromhex("00 c0 04")),
@@ -257,6 +305,9 @@ class Bridge:
 
     def deliver_one(self, client, received, queued, body):
         start = time.monotonic()
+        # Prefer losing stale repeats over an audible "catch up" burst. Taps
+        # get a longer window; HA separately checks repeat age before each step
+        # to cover time spent waiting in its own automation queue.
         max_age = 0.3 if body.get("repeat", False) else 1
         if start - received > max_age:
             LOG.warning("Discarded expired input sequence=%s repeat=%s age_ms=%d",
@@ -293,6 +344,9 @@ class Bridge:
     def run(self):
         self.lib.bcm_host_init()
         self.lib.vc_cec_register_callback(self.callback, None)
+        # Manage identity/replies ourselves instead of firmware's automatic CEC
+        # behavior. register_all below requests all callback types; it is not a
+        # guarantee that firmware exposes all traffic between other devices.
         if self.lib.vc_cec_set_passive(1):
             raise RuntimeError("Cannot enable passive CEC management")
         claimed = False
@@ -314,6 +368,7 @@ class Bridge:
             worker = threading.Thread(target=self.deliver, daemon=True)
             worker.start()
             if self.readiness is not None:
+                # Probing a TV during startup must not block volume delivery.
                 threading.Thread(target=self.readiness.run, daemon=True).start()
             LOG.info("Ready; physical=%04x, TV audio mode stays off", self.physical)
             refresh = time.monotonic() + 60
@@ -323,12 +378,17 @@ class Bridge:
                 except queue.Empty:
                     pass
                 if time.monotonic() >= refresh:
+                    # Relearn playback addresses after reconnects without
+                    # requesting Active Source or switching the TV's input.
                     self.advertise()
                     self.discover()
                     refresh = time.monotonic() + 60
         finally:
             self.stop.set()
             if claimed:
+                # Withdraw the receiver's active-audio claim on clean shutdown.
+                # A power cut cannot send this; Apple TV has sometimes needed
+                # a restart to recover CEC after the Pi was unplugged.
                 for address in self.apples:
                     self.send(address, bytes.fromhex("7e 00"))
                 time.sleep(0.3)
