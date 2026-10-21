@@ -1,7 +1,7 @@
 {
-  "webhook_url": "http://homeassistant.local:8123/api/webhook/REPLACE_WITH_VOLUME_WEBHOOK_ID",
-  "ready_webhook_url": "http://homeassistant.local:8123/api/webhook/REPLACE_WITH_READINESS_WEBHOOK_ID",
-  "tv_host": "tv.local",
+  "webhook_url": "http://ha.example.invalid:8123/api/webhook/REPLACE_WITH_VOLUME_WEBHOOK_ID",
+  "ready_webhook_url": "http://ha.example.invalid:8123/api/webhook/REPLACE_WITH_READINESS_WEBHOOK_ID",
+  "tv_host": "tv.example.invalid",
   "tv_port": 3000,
   "readiness_interval": 0.25,
   "readiness_timeout": 30,

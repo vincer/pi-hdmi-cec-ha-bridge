@@ -1,5 +1,10 @@
 config.json
+config.json.*
+config.local.json
+.private/
 .env
+.env.*
+!.env.example
 *.log
 __pycache__/
 *.py[cod]

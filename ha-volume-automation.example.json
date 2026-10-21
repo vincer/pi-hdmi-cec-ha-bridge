@@ -19,7 +19,7 @@
     },
     {
       "condition": "state",
-      "entity_id": "media_player.lg_webos_tv_oled65e6p",
+      "entity_id": "media_player.lg_tv",
       "state": "on"
     }
   ],
@@ -53,7 +53,7 @@
                   {
                     "action": "media_player.volume_up",
                     "target": {
-                      "entity_id": "media_player.lg_webos_tv_oled65e6p"
+                      "entity_id": "media_player.lg_tv"
                     }
                   }
                 ]
@@ -76,7 +76,7 @@
                   {
                     "action": "media_player.volume_down",
                     "target": {
-                      "entity_id": "media_player.lg_webos_tv_oled65e6p"
+                      "entity_id": "media_player.lg_tv"
                     }
                   }
                 ]
@@ -90,10 +90,10 @@
             {
               "action": "media_player.volume_mute",
               "target": {
-                "entity_id": "media_player.lg_webos_tv_oled65e6p"
+                "entity_id": "media_player.lg_tv"
               },
               "data": {
-                "is_volume_muted": "{{ not state_attr('media_player.lg_webos_tv_oled65e6p', 'is_volume_muted') }}"
+                "is_volume_muted": "{{ not state_attr('media_player.lg_tv', 'is_volume_muted') }}"
               }
             }
           ]

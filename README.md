@@ -23,7 +23,7 @@ Modern Raspberry Pi OS releases use a different CEC interface. This implementati
 ## Setup
 
 1. Install `cec_ha_bridge.py` under `/home/pi/cec-ha-bridge/`.
-2. Copy `config.example.json` to `config.json`; supply the two private webhook URLs and your TV's reserved IP address or hostname. Use directory permissions 0700 and config permissions 0600.
+2. Copy `config.example.json` to `config.json`; supply the two private webhook URLs and your TV's reserved IP address. Use directory permissions 0700 and config permissions 0600. The example hosts ending in `.invalid` are placeholders and must be replaced.
 3. Adapt both HA automation examples: replace `[REDACTED]` webhook IDs with different random IDs, and replace the LG entity ID with your own. Import/save through HA's supported configuration tools. The volume example uses counted steps and stale-repeat expiry; the readiness example calls `homeassistant.update_entity`.
 4. Install the systemd unit under `/etc/systemd/system/`; adjust paths/account as needed. Run `sudo systemctl daemon-reload` and `sudo systemctl enable --now pi-cec-ha.service`.
 5. Add `hdmi_ignore_cec_init=1` to the legacy Pi boot configuration to prevent boot selecting the Pi input.
@@ -31,13 +31,21 @@ Modern Raspberry Pi OS releases use a different CEC interface. This implementati
 
 Keep webhook IDs private. HA triggers accept only local POSTs. No HA bearer token is stored on the Pi.
 
+### Private deployment configuration
+
+Keep actual network addresses and full webhook URLs in **`config.json`**, which is gitignored. The bridge reads all endpoint addresses from this file; they do not belong in the Python source or public examples. `config.json.*` backups, `config.local.json`, and `.private/` are also ignored. Gitignore prevents ordinary accidental additions; it does not encrypt files or remove anything already committed. Keep the private config mode 0600, and do not force-add it to Git.
+
+Reserve the TV and HA addresses through your router's DHCP reservations. For this latency-sensitive bridge, use HA's reserved numeric IP in both webhook URLs and the TV's reserved numeric IP in `tv_host`; this removes hostname resolution from those delivery and probe paths. A reservation for the Pi is also useful for management and monitoring. If your HA URL uses HTTPS, the address must match its certificate, or you must retain a hostname with reliable name resolution.
+
+The tracked automation files are templates: adapt them to your own entity IDs and webhook IDs in HA or in private copies outside the public checkout. Keep diagnostic captures and deployment backups outside the public checkout as well. Before publishing changes, inspect the staged diff and confirm `git check-ignore config.json` succeeds. Only sanitized examples should be committed.
+
 ### Home Assistant setup
 
 1. Set up and pair HA's native **LG webOS Smart TV** integration with the TV. On the tested E6, **LG Connect Apps** must be enabled on the TV. Confirm that HA can change volume and mute while the TV is on before adding the bridge. The TV's separate **Network IP Control** interface is not required by this setup.
-2. Find your TV's `media_player` entity ID. Replace every occurrence of `media_player.lg_webos_tv_oled65e6p` in both example automations with that ID.
+2. Find your TV's `media_player` entity ID. Replace every occurrence of `media_player.lg_tv` in both example automations with that ID.
 3. Generate two different, long random webhook IDs, one for volume and one for readiness. For example, run `python3 -c 'import secrets; print(secrets.token_hex(32))'` twice. Replace `[REDACTED]` in each example with its respective ID. The IDs act as secrets; the payload's `sender` field is only a validation check, not authentication.
 4. Create two HA automations using [the volume example](ha-volume-automation.example.json) and [the readiness example](ha-readiness-automation.example.json). Each file is a single automation object, not a blueprint or a complete `automations.yaml` file. In the automation editor's **Edit in YAML** view, replace the generated definition with the corresponding JSON object (JSON is valid YAML), then save and enable it. If maintaining `automations.yaml` directly, convert each object to YAML and add it as a separate list entry alongside your existing automations.
-5. In the Pi's `config.json`, set `webhook_url` to `http://YOUR_HA_HOST:8123/api/webhook/YOUR_VOLUME_ID` and `ready_webhook_url` to the corresponding readiness URL. Use the address, scheme and port reachable from the Pi; keep each ID matched to its automation. Set `tv_host` to the TV's reserved IP address or resolvable hostname, not HA's address. The readiness probe defaults to the TV's webOS TCP port 3000.
+5. In the Pi's `config.json`, set `webhook_url` to `http://YOUR_RESERVED_HA_IP:8123/api/webhook/YOUR_VOLUME_ID` and `ready_webhook_url` to the corresponding readiness URL. Use the address, scheme and port reachable from the Pi; keep each ID matched to its automation. Set `tv_host` to the TV's reserved IP address, not HA's address. The readiness probe defaults to the TV's webOS TCP port 3000.
 6. Keep both webhooks local-only and POST-only, as in the examples. Restart the bridge after changing its config. With the TV on and Apple TV volume control set to HDMI, test up, down and mute; then test waking the TV and changing volume once the picture appears. Check HA automation traces and the Pi journal if a step fails. An HTTP success from the webhook alone does not prove that HA changed the TV's volume.
 
 The volume automation uses HA's native volume/mute actions, runs a small queue to preserve taps, and expires held repeats before each volume step. It requires HA to report the TV as `on`; early commands are not saved for later playback.
