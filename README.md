@@ -31,6 +31,25 @@ Modern Raspberry Pi OS releases use a different CEC interface. This implementati
 
 Keep webhook IDs private. HA triggers accept only local POSTs. No HA bearer token is stored on the Pi.
 
+### Home Assistant setup
+
+1. Set up and pair HA's native **LG webOS Smart TV** integration with the TV. On the tested E6, **LG Connect Apps** must be enabled on the TV. Confirm that HA can change volume and mute while the TV is on before adding the bridge. The TV's separate **Network IP Control** interface is not required by this setup.
+2. Find your TV's `media_player` entity ID. Replace every occurrence of `media_player.lg_webos_tv_oled65e6p` in both example automations with that ID.
+3. Generate two different, long random webhook IDs, one for volume and one for readiness. For example, run `python3 -c 'import secrets; print(secrets.token_hex(32))'` twice. Replace `[REDACTED]` in each example with its respective ID. The IDs act as secrets; the payload's `sender` field is only a validation check, not authentication.
+4. Create two HA automations using [the volume example](ha-volume-automation.example.json) and [the readiness example](ha-readiness-automation.example.json). Each file is a single automation object, not a blueprint or a complete `automations.yaml` file. In the automation editor's **Edit in YAML** view, replace the generated definition with the corresponding JSON object (JSON is valid YAML), then save and enable it. If maintaining `automations.yaml` directly, convert each object to YAML and add it as a separate list entry alongside your existing automations.
+5. In the Pi's `config.json`, set `webhook_url` to `http://YOUR_HA_HOST:8123/api/webhook/YOUR_VOLUME_ID` and `ready_webhook_url` to the corresponding readiness URL. Use the address, scheme and port reachable from the Pi; keep each ID matched to its automation. Set `tv_host` to the TV's reserved IP address or resolvable hostname, not HA's address. The readiness probe defaults to the TV's webOS TCP port 3000.
+6. Keep both webhooks local-only and POST-only, as in the examples. Restart the bridge after changing its config. With the TV on and Apple TV volume control set to HDMI, test up, down and mute; then test waking the TV and changing volume once the picture appears. Check HA automation traces and the Pi journal if a step fails. An HTTP success from the webhook alone does not prove that HA changed the TV's volume.
+
+The volume automation uses HA's native volume/mute actions, runs a small queue to preserve taps, and expires held repeats before each volume step. It requires HA to report the TV as `on`; early commands are not saved for later playback.
+
+The readiness automation addresses that startup gap. After any external CEC Active Source announcement, the Pi probes the TV until webOS becomes reachable, then asks HA to refresh the LG entity if it is not already `on`. This accelerates HA's reconnect without changing inputs or turning devices on. Keep the volume and readiness automations together for the intended startup behavior. No custom HA integration, MQTT broker or HA access token on the Pi is needed.
+
+### TV startup: enable Quick Start+
+
+**Enable Quick Start+ on the LG TV for faster volume control after waking it.** On this OLED65E6P, our wake tests took roughly **16–17 seconds** from the CEC Active Source announcement until the webOS port became reachable with Quick Start+ off, versus roughly **3 seconds** with it on. These are measurements from this setup, not guaranteed timings for other TVs.
+
+The bridge relies on the TV's network control service, so seeing a picture does not necessarily mean volume control is ready. Quick Start+ reduces the TV-side startup delay; the readiness automation above reduces the additional wait for HA to reconnect. It cannot make webOS available before the TV starts it, and very early button presses can still be dropped. Quick Start+ can increase standby power consumption; measure your own TV if that tradeoff matters.
+
 ## Validation and operation
 
 Run `python3 -m unittest test_cec_delivery test_cec_hold_acceleration test_cec_readiness`. Tests mock firmware access; one test uses a local TCP listener.
